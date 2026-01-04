@@ -2,7 +2,7 @@
 
 namespace Frosh\MailValidation\Subscriber;
 
-use Frosh\MailValidation\Constraint\ValidEmail;
+use Frosh\MailValidation\Constraint\TestEmail;
 use Shopware\Core\Framework\Validation\BuildValidationEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
@@ -21,6 +21,6 @@ class BuildValidationEventListener implements EventSubscriberInterface
 
     public function buildValidationEvent(BuildValidationEvent $event): void
     {
-        $event->getDefinition()->add('email', new ValidEmail());
+        $event->getDefinition()->add('email', new TestEmail());
     }
 }

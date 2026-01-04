@@ -5,7 +5,7 @@ namespace Frosh\MailValidation\Constraint;
 use Symfony\Component\Validator\Attribute\HasNamedArguments;
 use Symfony\Component\Validator\Constraint;
 
-class ValidEmail extends Constraint
+class TestEmail extends Constraint
 {
     final public const CODE = 'f5926730-bcf9-4462-ba58-b9fc5c7665c3';
 
