@@ -5,18 +5,16 @@ namespace Frosh\MailValidation\Service;
 use Psr\Log\LoggerInterface;
 use Shopware\Core\Framework\Util\Hasher;
 use Shopware\Core\System\SystemConfig\SystemConfigService;
-use Shyim\CheckIfEmailExists\EmailChecker;
+use Shyim\CheckIfEmailExists\DNS;
 use Shyim\CheckIfEmailExists\SMTP;
 use Shyim\CheckIfEmailExists\Syntax;
 use Symfony\Component\Cache\Adapter\AdapterInterface;
-use Symfony\Contracts\Cache\CacheInterface;
-use Symfony\Contracts\Cache\ItemInterface;
 
 class Validator
 {
     public function __construct(
         private readonly SystemConfigService $systemConfigService,
-        private readonly CacheInterface $cache,
+        private readonly AdapterInterface $cache,
         private readonly LoggerInterface $froshMailValidationLogger,
     ) {
     }
@@ -25,18 +23,25 @@ class Validator
     {
         $email = \strtolower($email);
 
-        $verifyEmail = $this->systemConfigService->getString('FroshMailValidation.config.verifyEmail');
-
-        $syntax = new Syntax($email);
-        if ($syntax->isValid() === false) {
+        $emailCacheKey = 'frosh_mail_validation_email_' . Hasher::hash($email);
+        $mailValidCache = $this->cache->getItem($emailCacheKey);
+        if ($mailValidCache->get() === false) {
             return false;
         }
 
-        $domain = $syntax->domain;
+        $mailValidCache->expiresAfter(3600);
+
+        $verifyEmail = $this->systemConfigService->getString('FroshMailValidation.config.verifyEmail');
+
+        $syntaxCheck = new Syntax($email);
+        if ($syntaxCheck->isValid() === false) {
+            return false;
+        }
+
+        $domain = $syntaxCheck->domain;
 
         $domainCacheKey = 'frosh_mail_validation_domain_' . Hasher::hash($domain);
 
-        \assert($this->cache instanceof AdapterInterface);
         $domainValidCache = $this->cache->getItem($domainCacheKey);
 
         // first check if the domain is already marked as invalid
@@ -44,27 +49,43 @@ class Validator
             return false;
         }
 
-        $checker = new EmailChecker(smtp: new SMTP($verifyEmail));
+        $domainValidCache->expiresAfter(86400);
 
-        $emailCacheKey = 'frosh_mail_validation_email_' . Hasher::hash($email);
+        $mxRecords = (new DNS())->getMxRecords($domain);
 
-        return $this->cache->get($emailCacheKey, function (ItemInterface $cacheItem) use ($email, $checker, $domainValidCache) {
-            $result = $checker->check($email);
-
-            $domainValid = $result->hasMxRecords && $result->isReachable;
-            $domainValidCache->set($domainValid);
-            $domainValidCache->expiresAfter($domainValid ? 86400 : 3600);
+        if (empty($mxRecords)) {
+            $domainValidCache->set(false);
+            $domainValidCache->expiresAfter(3600);
             $this->cache->save($domainValidCache);
 
-            $cacheItem->expiresAfter(3600);
-
-            if ($domainValid && $result->isDisabled === false && $result->hasFullInbox === false) {
-                return true;
-            }
-
-            $this->froshMailValidationLogger->error('Email validation failed', $result->toArray());
+            $this->froshMailValidationLogger->error(\sprintf('Domain %s has no mx records', $domain));
 
             return false;
-        });
+        }
+
+        $smtpCheck = (new SMTP($verifyEmail))->check($domain, $mxRecords[0], $email);
+        if ($smtpCheck['can_connect'] === false) {
+            $domainValidCache->set(false);
+            $domainValidCache->expiresAfter(3600);
+            $this->cache->save($domainValidCache);
+
+            $this->froshMailValidationLogger->error(\sprintf('Mail server at %s of domain %s is not connectable', $mxRecords[0], $domain));
+
+            return false;
+        }
+
+        $domainValidCache->set(true);
+        $this->cache->save($domainValidCache);
+
+        $isValid = $smtpCheck['is_deliverable'] === true && $smtpCheck['is_disabled'] === false && $smtpCheck['has_full_inbox'] === false;
+
+        $mailValidCache->set($isValid);
+        $this->cache->save($domainValidCache);
+
+        if ($isValid === false) {
+            $this->froshMailValidationLogger->error('Email validation failed', $smtpCheck);
+        }
+
+        return $isValid;
     }
 }
